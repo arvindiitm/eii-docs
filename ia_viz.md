@@ -178,3 +178,58 @@ B) For Ingestor's **GVA** type, metadata structure sample is :
 where in `gva_meta` is a list of dicts.
 
 **NOTE**: Any data with in the list, tuple or dict of meta data should be of primitive data type (int, float, string, bool). Refer the examples given above.
+
+# EII Message Bus User Guide
+
+## Overview
+
+- [EII Message Bus Architecture]()
+- [EII Message Bus Usage]()
+    - [Compilation & Installtion]()
+    - [Python Tutorial]()
+    - [Go Tutorial]()
+    - [C Tutorial]()
+- [EII Message Bus Development]()
+    - [Developing Protocols]()
+
+## EII Message Bus Architecture
+
+
+## EII Message Bus Usage
+
+### Compilation & Installation
+
+The EII Message Bus utilizes the CMake build tools for compiling the `C` and
+`Python` libraries. To compile the library execute the following commands:
+
+```sh
+$ mkdir build
+$ cd build
+$ cmake ..
+$ make
+```
+
+The EII Message Bus adds the following flags to CMake for the build process
+to enable and disable features in the message bus. The table below specifies
+all of the additional flags which can be given to CMake while building the
+message bus.
+
+|      Flag       |                    Description                 |
+| :-------------: | ---------------------------------------------- |
+| `WITH_PYTHON`   | Compile the Python binding with the C library. |
+| `WITH_GO`       | Install the GO binding with the C library.     |
+| `WITH_EXAMPLES` | Compile the C examples.                        |
+| `WITH_TESTS`    | Compile the C unit tests.                      |
+
+> **NOTE:** All of the flags are passed to CMake using the following CLI
+> format: `-D<FLAG>=[ON | OFF]`. For example, `cmake -DWITH_PYTHON=ON ..`.
+
+To install the message bus, execute the following command:
+
+```sh
+$ sudo make install
+```
+
+If the `WITH_PYTHON` flag was given to CMake during the compilation step, then
+the Python binding will also be installed into the `dist-packages` in your
+environment.
