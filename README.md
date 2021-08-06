@@ -1,659 +1,760 @@
-# Release package
+# EII Message Bus
 
-The Edge Insights for Industrial(EII) release package comprises of below ingredients:
+Message bus used between containers inside of EII.
 
-* `Docs`:
-  This directory has the release notes, user guide and API reference guide for a given EII
-  release package
+## Dependency Installation
 
-* `IEdgeInsights`: Edge Insights for Industrials (EII) is the framework for enabling smart manufacturing with visual and point defect inspections.
-
-# Contents:
-
-1. [Minimum System Requirements](#minimum-system-requirements)
-
-2. [EII Prerequisites installation](#eii-prerequisites-installation)
-
-3. [Generate deployment and configuration files](#generate-deployment-and-configuration-files)
-
-4. [Provision](#provision)
-
-5. [Build / Run EII PCB Demo Example](#build-and-run-eii-pcb-demo-example)
-
-6. [Custom Udfs](#custom-udfs)
-
-7. [Etcd Secrets and MessageBus Endpoint Configuration](#etcd-secrets-and-messagebus-endpoint-configuration)
-
-8. [Enable camera based Video Ingestion](#enable-camera-based-video-ingestion)
-
-9. [Using video accelerators](#using-video-accelerators)
-
-10. [Time-series Analytics](#time-series-analytics)
-
-11. [List of All EII services](#list-of-all-eii-services)
-
-12. [EII multi node cluster provision and deployment using Turtlecreek](#eii-multi-node-cluster-provision-and-deployment-using-turtlecreek)
-
-13. [Debugging options](#debugging-options)
-
-14. [EII Uninstaller](#eii-uninstaller)
-
-
-# Minimum System Requirements
-
-EII software will run on the below mentioned Intel platforms:
-
-```
-* 6th generation Intel® CoreTM processor onwards OR
-  6th generation Intel® Xeon® processor onwards OR
-  Pentium® processor N4200/5, N3350/5, N3450/5 with Intel® HD Graphics
-* At least 16GB RAM
-* At least 64GB hard drive
-* An internet connection
-* Ubuntu 18.04
-```
-
-For performing Video Analytics, a 16GB of RAM is recommended.
-For time-series ingestion and analytics, a 2GB RAM is sufficient.
-The EII is validated on Ubuntu 18.04 and though it can run on other platforms supporting docker, it is not recommended.
-
-# EII Prerequisites installation
-
-The installer script automates the installation & configuration of all the prerequisite software needed to be installed on a system with a freshly installed Operating system to make the system ready for provisioning, building and running EII stack. These pre-requisite softwares include:
-1. **docker daemon**
-2. **docker client**
-3. **docker-compose**
-4. **Python packages**
-
-The script checks if docker & docker-compose are already installed in the system. If not installed, then it installs the intended version of the docker & docker-compose which is mentioned in the script.
-If docker and/or docker-compose are already installed in the system but the installed version of the docker/docker-compose is older than the intended docker/docker-compose version (which is mentioned in the script) then the script uninstalls the older version of docker/docker-compose & re-installs the intended version mentioned in the script. The script also configures the proxy settings for docker client and docker daemon to connect to internet.
-
-The [build/pre_requisites.sh](build/pre_requisites.sh) script also does proxy setting configuration for both system wide proxy & docker proxy. The script prompts for the proxy address to be entered by the user, if the system is behind a proxy.
-The script also configures proxy setting system wide `/etc/environment` and for docker by taking the proxy value as user input if the system is running behind proxy. The proxy settings for `/etc/apt/apt.conf` is also set by this script to enable apt updates & installations.
-
-1. **Steps to run the installer script is as follows**:
+The EII Message Bus depends on CMake version 3.11+. For Ubuntu 18.04 this is not
+the default version installed via `apt-get`. To install the correct version
+of CMake, execute the following commands:
 
 ```sh
-$ cd [WORKDIR]/IEdgeInsights/build
-$ sudo ./pre_requisites.sh --help
+# Remove old CMake version
+$ sudo apt -y purge cmake
+$ sudo apt -y autoremove
 
-Usage :: sudo ./pre_requisites.sh [OPTION...]
+# Download CMake
+$ wget https://cmake.org/files/v3.15/cmake-3.15.0-Linux-x86_64.sh
 
-List of available options...
+# Installation CMake
+$ sudo mkdir /opt/cmake
+$ sudo cmake-3.15.0-Linux-x86_64.sh --prefix=/opt/cmake --skip-license
 
---proxy         proxies, required when the gateway/edge node running EII (or any of EII profile) is connected behind proxy
-
---help / -h         display this help and exit
-
-Note : If --proxy option is not provided then script will run without proxy
-
-Different use cases...
-
-                1. RUNS WITHOUT PROXY
-                $sudo ./pre_requisites.sh
-
-
-                2.RUNS WITH PROXY
-                $sudo ./pre_requisites.sh --proxy="proxy.intel.com:891"
-
+# Make the command available to all users
+$ sudo update-alternatives --install /usr/bin/cmake cmake /opt/cmake/bin/cmake 1 --force
 ```
 
-
-2. **Optional:** For enabling full security for production deployments, make sure host machine and docker daemon are configured with below security recommendations. [build/docker_security_recommendation.md](build/docker_security_recommendation.md)
-
-3. **Optional:** If one wishes to enable log rotation for docker containers
-
-    There are two ways to configure logging driver for docker containers
-
-    * Set logging driver as part of docker daemon (**applies to all docker containers by default**):
-
-        * Configure `json-file` driver as default logging driver by following [https://docs.docker.com/config/containers/logging/json-file/](https://docs.docker.com/config/containers/logging/json-file/). Sample json-driver config which can be copied to `/etc/docker/daemon.json` is provided below.
-
-            ```
-            {
-                "log-driver": "json-file",
-                "log-opts": {
-                "max-size": "10m",
-                "max-file": "5"
-                }
-            }
-            ```
-
-        * Reload the docker daemon
-            ```
-            $ sudo systemctl daemon-reload
-            ```
-        * Restart docker
-            ```
-            $ sudo systemctl restart docker
-            ```
-
-    * Set logging driver as part of docker compose which is conatiner specific and which always overwrites 1st option (i.e /etc/docker/daemon.json)
-
-        Example to enable logging driver only for video_ingestion service:
-
-        ```
-        ia_video_ingestion:
-            ...
-            ...
-            logging:
-             driver: json-file
-             options:
-              max-size: 10m
-              max-file: 5
-        ```
-
-# Generate deployment and configuration files
-
-The section assumes the EII software is already downloaded from the release package or from git.
-Run all the below commmands in this section from `[WORKDIR]/IEdgeInsights/build/` directory.
-
-## 1. Generating consolidated docker-compose.yml, eii_config.json and eii-k8s-deploy.yml files:
-
-EII is equipped with [builder](build/builder.py), a robust python tool to auto-generate the required configuration files to deploy EII services on single/multiple nodes. The tool is    capable of auto-generating the following consolidated files by fetching the respective files from EII service directories which are required to bring up different EII use-cases:
-
-| file name                    | Description   |
-| ---------------------------- | ------------- |
-| docker-compose.yml           | Consolidated `docker-compose.yml` file used to launch EII docker containers in a given single node using `docker-compose` tool                                       |
-| docker-compose.override.yml  | Consolidated `docker-compose-dev.override.yml` of every app that is generated only in DEV mode for EII deployment on a given single node using `docker-compose` tool |
-| eii_config.json              | Consolidated `config.json` of every app which will be put into etcd during provisioning                                                                              |
-| eii-k8s-deploy.yml           | Consolidated `k8s-service.yml` of every app that is required to deploy EII service via Kubernetes orchestrator                                                       |
-
-> **NOTE**:
-> 1. Whenever we make changes to individual EII app/service directories files as mentioned above in the description column
-     or in the [build/.env](build/.env) file, it is required to re-run the `builder.py` script before provisioning and running 
-     the EII stack to ensure that the changes done reflect in the required consolidated files.
-> 2. Manual editing of above consolidated files is not recommended and we would recommend to do the required changes to
-     respective files in EII app/service directories and use Builder script to generate the conslidated ones.
-
-### 2. Using builder script
-#### * Running builder
-
-Builder script usage:
+To install the remaining dependencies for the message bus execute the following
+command:
 
 ```sh
-$ python3.6 builder.py -h
-usage: builder.py [-h] [-f YML_FILE] [-v VIDEO_PIPELINE_INSTANCES]
-                    [-d OVERRIDE_DIRECTORY]
-
-optional arguments:
-    -h, --help            show this help message and exit
-    -f YML_FILE, --yml_file YML_FILE
-                        Optional config file for list of services to include.
-                        Eg: python3.6 builder.py -f video-streaming.yml
-                        (default: None)
-    -v VIDEO_PIPELINE_INSTANCES, --video_pipeline_instances VIDEO_PIPELINE_INSTANCES
-                        Optional number of video pipeline instances to be
-                        created. Eg: python3.6 builder.py -v 6 (default:
-                        1)
-    -d OVERRIDE_DIRECTORY, --override_directory OVERRIDE_DIRECTORY
-                        Optional directory consisting of of benchmarking
-                        configs to be present in each app directory. Eg:
-                        python3.6 builder.py -d benchmarking (default:
-                        None)
+$ sudo -E ./install.sh
 ```
 
+Additionally, EIIMessageBus depends on the below libraries. Follow their documentation to install them.
+* [IntelSafeString](../IntelSafeString/README.md)
+* [EIIMsgEnv](../EIIMsgEnv/README.md)
+* [EIIUtils](../../util/c/README.md)
 
-* `Running builder to generate the above listed consolidated files for all applicable EII services`:
+If you wish to compile the Python binding as well, then run the `install.sh`
+script with the `--cython` flag (as shown below).
 
-   Builder will parse the top level directories under **IEdgeInsights** to generate the above listed consolidated files.
+```sh
+$ sudo -E ./install.sh --cython
+```
 
-   ```sh
-   $ python3 builder.py
-   ```
+## Compilation
 
-* `Running builder to generate the above listed consolidated files for a subset of EII services`:
+The EII Message Bus utilizes CMake as the build tool for compiling the library.
+The simplest sequence of commands for building the library are shown below.
 
-   This is achieved by providing a yml file to Builder as config which has list of services to include. User can mention the service name as path relative to **IEdgeInsights** or Full path to the service in the config yml file.
+```sh
+$ mkdir build
+$ cd build
+$ cmake ..
+$ make
+```
 
-  If user wants to include only a certain number of services in the EII stack, he can opt to provide the **-f or yml_file** flag of builder to allow only the services provided in the yml file mentioned with the **-f or yml_file**. Few examples of such yml files for different usecases are provided at [video](build/video-streaming.yml), [time-series](build/time-series.yml), [Azure](build/video-streaming-azure.yml) etc.,
+This will compile only the C library for the EII Message Bus. If you wish to
+build with the Python binding, then specify the `WITH_PYTHON` flag when
+executing the `cmake ` command (as shown below).
 
-  An example for running Builder with this flag is given below:
+```sh
+$ cmake -DWITH_PYTHON=ON ..
+```
 
-  ```sh
-  $ python3 builder.py -f video-streaming.yml
-  ```
+If you wish to include installation of the Go binding with the installation of
+the EII library, then specify the `WITH_GO` flag when executing the `cmake`
+command (as shown below).
 
-* `Running builder to generate multi instance configs`:
+```sh
+$ cmake -DWITH_GO=ON ..
+```
 
-  Based on the user's requirements, builder can also generate multi-instance docker-compose.yml, config.json, k8s-service.yml respectively.
+Note that this only copies the Go binding library to your system's `$GOPATH`.
+If you do not have your `$GOPATH` specified in your system's environmental
+variables then an error will occur while executing the `cmake` command.
 
-  If user wants to generate boiler plate config for multiple stream use cases, he can do so by using the **-v or video_pipeline_instances** flag of builder. This flag creates multi stream boiler plate config for docker-compose.yml, eii_config.json & k8s k8s-service.yml files respectively.
+In addition to the `WITH_PYTHON` and `WITH_GO` flags, the EII Message Bus
+CMake files add flags for building the C examples and the unit tests associated
+with the library. The table below specifies all of the available flags that can
+be given to CMake for building the EII Message Bus.
 
-  An example for running builder to generate multi instance boiler plate config for 3 streams of **video-streaming** use case has been provided below:
+|       Flag      | Default |                                       Description                                    |
+| :-------------: | :-----: | ------------------------------------------------------------------------------------ |
+| `WITH_TESTS`    | `OFF`   | If set to `ON`, builds the C unit tests with the EII Message Bus compilation         |
+| `WITH_EXAMPLES` | `OFF`   | If set to `ON`, then CMake will compile the C examples in addition to the library    |
+| `WITH_DOCS`     | `OFF`   | If set to `ON`, then CMake will add a `docs` build target to generate documentation  |
 
-  ```sh
-  $ python3 builder.py -v 3 -f video-streaming.yml
-  ```
+> **NOTE:** These flags are in addition to any and all flags that are available
+> for the `cmake` command. See the CMake documentation for additional flags.
 
-  > **NOTE**: This multi-instance feature support of Builder works only for the video pipeline i.e., **video-streaming.yml** use case alone and not with any other use case yml files like **video-streaming-storage.yml** etc., Also, it doesn't work for cases without `-f` switch too. In other words, only the above example works with `-v` taking in any +ve number
+> **NOTE:** See the [Generating Documentation](#generating-documentation)
+> section.
 
-* `Running builder to generate benchmarking configs`:
+If you wish to compile the EII Message Bus in debug mode, then you can set the
+the `CMAKE_BUILD_TYPE` to `Debug` when executing the `cmake` command (as shown
+below).
 
-  If user wants to provide a different set of docker-compose.yml, config.json & k8s k8s-service.yml other than the ones present in every service directory, he can opt to provide the **-d or override_directory** flag which indicates to search for these required set of files within a directory provided by the flag. For example, if user wants to pick up these files from a directory named **benchmarking**, he can run the command provided below:
+```sh
+$ cmake -DCMAKE_BUILD_TYPE=Debug ..
+```
 
-  ```sh
-  $ python3 builder.py -d benchmarking
-  ```
+### Generating Documentation
 
-    > **Note:**
-    > * If using the override directory feature of builder, it is recommended to include set of all 3 files mentioned above. Failing to provide any of the files in the override directory results in builder not including that service in the generated final config.
-    > * If user wishes to spawn a single Subscriber/Client container subscribing/receiving on multiple Publisher/Server containers, he can do so by adding the AppName of Subscriber/Client container in **subscriber_list** of [builder_config.json](build/builder_config.json) ensuring the Publisher/Server container **AppName** is added in the **publisher_list** of [builder_config.json](build/builder_config.json). For services not mentioned in **subscriber_list**, multiple containers specified by the **-v** flag are spawned.
-    For eg: If builder is run with **-v 3** option and **Visualizer** isn't added in **subscriber_list** of [builder_config.json](build/builder_config.json), 3 **Visualizer** instances are spawned, each of them subscribing to 3 **VideoAnalytics** services. If **Visualizer** is added in **subscriber_list** of [builder_config.json](build/builder_config.json), a single **Visualizer** instance subscribing to 3 multiple **VideoAnalytics** is spawned.
+Generating the documentation has several dependencies which are not installed
+by the `install.sh` script. You must install the following packages in order
+to generate the documentation:
 
- #### 3. Adding new EII service so it gets picked up by Builder
+```sh
+$ sudo apt install doxygen texlive-full
+```
 
-Since the builder takes care of registering and running any service present in it's own directory in the [IEdgeInsights](./) directory, this section describes on how to add any new service the user wants to add into the EII stack, subscribe to [VideoAnalytics](./VideoAnalytics) and publish on a new port.
+**WARNING:** This install way take a very long time. It will install > `4GB` of
+packages.
 
-Any service that needs to be added into the EII stack should be added as a new directory in the [IEdgeInsights](./) directory. The directory should contain a **docker-compose.yml** which will be used to deploy the service as a docker container and it should also contain a **config.json** which contains the required config for the service to run once it is deployed. The **config.json** will mainly consist of a **config** section which includes the configuration related parameters required to run the application and an **interfaces** section which includes the configuration of how this service interacts with other services of the EII stack. The **AppName** present in **environment** section in **docker-compose.yml** file is appended to the **config** & **interfaces** like **/AppName/config** & **/AppName/interfaces** before being put into the main [eii_config.json](build/provision/config/eii_config.json). Additionally, if the EII service needs to be deployed over k8s orchestrator, the **k8s-service.yml** file needs to be defined.
+If you are building the Python binding (by using the `WITH_PYTHON` flag), then
+you must also install Sphinx and an extension for Sphinx. This can be
+accomplished with the following commands:
 
-An example has been provided below on how to write the **config.json** for any new service, subscribe it to **VideoAnalytics** and publish on a new port:
+```sh
+$ sudo apt install python3-sphinx
+$ sudo -H -E pip3 install m2r
+```
+> **NOTE:** The commands above assume you already have Python 3.6 and pip
+> installed on your system.
 
-```javascript
-    {
-        "config": {
-            "paramOne": "Value",
-            "paramTwo": [1, 2, 3],
-            "paramThree": 4000,
-            "paramFour": true
-        },
-        "interfaces": {
-            "Subscribers": [
-                {
-                    "Name": "default",
-                    "Type": "zmq_tcp",
-                    "EndPoint": "127.0.0.1:65013",
-                    "PublisherAppName": "VideoAnalytics",
-                    "Topics": [
-                        "camera1_stream_results"
-                    ]
-                }
-            ],
-            "Publishers": [
-                {
-                    "Name": "default",
-                    "Type": "zmq_tcp",
-                    "EndPoint": "127.0.0.1:65113",
-                    "Topics": [
-                        "publish_stream"
-                    ],
-                    "AllowedClients": [
-                        "ClientOne",
-                        "ClientTwo",
-                        "ClientThree"
-                    ]
-                }
-            ]
-        }
+**Go documentation generation is WIP.**
+
+Once you have completed these steps, the documentation can be generated by
+running the following make command:
+
+```sh
+$ make docs && make docs
+```
+
+Note that currently you need to run `make docs` twice so that the table of
+contents is generated correctly for each of the documents. This will be fixed
+in the future.
+
+The PDF documents will be in the `docs/pdfs/` directory within your `build`
+directory. There will be other log files and output files associated with the
+building of the PDFs. Any file that does not end in `.pdf` can be ignored.
+
+### Potential Compilation Issues
+
+- **CMake Python Version Issue:** If CMake raises an error for finding the
+    incorrect Python version, then add the following flag to the CMake
+    command: `-DPYTHON_EXECUTABLE=/usr/bin/python3`
+- **Python Binding Changes Not Compiling:** If a change is made to the Python
+    binding and make has already been previously ran, then you must run
+    `make clean` before running make again to compile the changes in the
+    Python binding. This will need to be fixed later.
+
+## Installation
+
+If you wish to install the EII Message Bus on your system, execute the
+following command after building the library:
+
+```sh
+$ sudo make install
+```
+
+By default, this command will install the EII Message Bus C library into
+`/usr/local/lib/`. On some platforms this is not included in the `LD_LIBRARY_PATH`
+by default. As a result, you must add this directory to you `LD_LIBRARY_PATH`,
+otherwise you will encounter issues using the EII Message Bus. This can
+be accomplished with the following `export`:
+
+```sh
+$ export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/lib/
+```
+> **NOTE:** You can also specify a different library prefix to CMake through
+> the `CMAKE_INSTALL_PREFIX` flag.
+
+### Install Python Binding
+
+To install the Python binding for the EII Message Bus execute the following
+commands:
+
+```sh
+# Change directories into the python/ directory
+$ cd python/
+
+# Install the Python package
+$ sudo python3 setup.py install
+```
+> **NOTE:** In order for the installation to be successful, you must have run
+> the `install.sh` script with the `--cython` flag when installing the
+> message bus dependencies.
+
+### Install Golang Binding
+
+To install the Golang binding for the EII Message Bus execute the following
+command:
+
+```sh
+# Copy the Golang source to your $GOPATH/src directory
+$ cp -a go/EIIMessageBus/ $GOPATH/src/
+```
+> **NOTE:** The above command assumes Golang is installed and configured on
+> the target system.
+
+## Running Unit Tests
+
+> **NOTE:** The unit tests will only be compiled if the `WITH_TESTS=ON` option
+> is specified when running CMake.
+
+Execute one of the following commands from the `build/tests` folder to execute
+the message bus unit tests.
+
+```sh
+$ ./msgbus-tests
+$ ./msg-envelope-tests
+$ ./crc32-tests
+```
+
+It is important to note that the `msgbus-tests` executable has an extra CLI
+option which the other unit test binaries do not have. This option allows for
+running the message bus tests to run over TCP rather than the IPC.
+
+To run the message bus tests over TCP, execute the following command:
+
+```sh
+$ ./msgbus-tests --tcp
+```
+
+## Configuration
+
+The EII Message Bus is configured through a `key, value` pair interface. The
+values can be objects, arrays, integers, floating point, boolean, or strings.
+The keys that are required to be available in the configuration are largly
+determined by the underlying protocol which the message bus will use. The
+protocol is specified via the `type` key and currently must be one of the
+following:
+
+- `zmq_ipc` - ZeroMQ over IPC protocol
+- `zmq_tcp` - ZeroMQ over TCP protocol
+
+The following sections specify the configuration attributes expected for the
+TCP and IPC ZeroMQ protocols.
+
+### ZeroMQ IPC Configuration
+
+The ZeroMQ IPC protocol implementation only requires one configuration
+attribute: `socket_dir`. The value of this attribute specifies the directory
+where the message bus should create the Unix socket files to establish the IPC
+based communication.
+
+### ZeroMQ TCP Configuration
+
+The ZeroMQ TCP protocol has several configuration attributes which must be
+specified based on the communication pattern the application is using and
+based on the security the application wishes to enable for its communication.
+
+#### Publishers
+
+For an application which wishes to publish messages over specific topics, the
+configuration must contain the key `zmq_tcp_publish`. This attribute must be
+an object which has the following keys:
+
+|          Key        |   Type   | Required |                         Description                      |
+| :-----------------: | -------- | -------- | -------------------------------------------------------- |
+| `host`              | `string` | Yes      | Specifies the host to publish as                         |
+| `port`              | `int`    | Yes      | Specifies the port to publish messages on                |
+| `server_secret_key` | `string` | No       | Specifies the secret key for the port for authentication |
+
+The `server_secret_key` must be a Curve Z85 encoded string value that is
+specified if the application wishes to use CurveZMQ authentication with to
+secure incoming connections from subscribers.
+
+#### Subscribers
+
+To subscribe to messages coming from a publisher over TCP, the configuration
+must contain a key for the topic you wish to subscribe to. For example, if
+*Application 1* were publishing on topic `sensor-1`, then the subscribing
+application *Application 2* would need to contain a configuration key `sensor-1`
+which contains the keys required to configure the TCP connection to
+*Application 1*.
+
+The key that can be specified for a subscribers configuration are outline in the
+table below.
+
+|          Key        |   Type   | Required |                         Description                        |
+| :-----------------: | -------- | -------- | ---------------------------------------------------------- |
+| `host`              | `string` | Yes      | Specifies the host of the publisher                        |
+| `port`              | `int`    | Yes      | Specifies the port of the publisher                        |
+| `server_public_key` | `string` | No       | Specifies the publisher's public key for authentication    |
+| `client_secret_key` | `string` | No       | Specifies the subscribers's secret key for authentication  |
+| `client_public_key` | `string` | No       | Specifies the subcribers's public key for authentication   |
+
+> **NOTE:** If one of the `*_key` values is specifed, then all of them must be
+> specified.
+
+#### Services
+
+The configuration to host a service to receive and respond to requests is
+similar to the configuration for doing publications on a message bus context.
+The only difference, is the configuration for a service is placed under a key
+which is the name of the service.
+
+For example, if *Application 1* wishes to host a service named `example-service`,
+then the configuration must contain an a key called `example-service`. The value
+for that key must be an object containing the keys listed in the table of
+the Publishers section.
+
+#### Requesters
+
+The configuration to issue requests to a service is the exact same as a
+subscriber. In the case of a requester, instead of the configuration being
+under the name of the topic, the configuration is placed under the name of
+the service it wishes to connect to. For the details of the allowed values,
+see the table in the Subscribers section above.
+
+#### Using ZAP Authentication
+
+For services and publishers additional security can be enabled for all incoming
+connections (i.e. requesters and subscribers). This method utilizes the ZMQ
+ZAP protocol to verify the incoming client public keys against a list of
+whitelisted clients.
+
+The list of allowed clients is given to the message bus via the `allowed_clients`
+key. This key must be a list of Z85 encoded CurveZMQ keys.
+
+### Additional ZeroMQ Configuration Properties
+
+The configuration interface for the ZeroMQ protocol exposes additional socket
+properties. The table below specifies each of the supported properties.
+
+|     Configuration      |  Type  |  Default |                                    Description                               |
+| :--------------------: | :----: | :------: | ---------------------------------------------------------------------------- |
+| `zmq_recv_hwm`         | `int`  | `1000`   | Sets `ZMQ_RCVHWM` socket property (queue size for pending received messages) |
+| `zmq_connect_retries`  | `int`  | `1000`   | Sets number of connect failures before recreating ZMQ socket object          |
+
+## Example Usage
+
+> **IMPORTANT NOTE:** Some of the example configurations contain public/private
+> keys for the purpose of show how to use the message bus with security enabled.
+> THESE KEYS SHOULD **NEVER** BE USED IN PRODUCTION.
+
+> **NOTE:** The examples will only be compiled if the `WITH_EXAMPLES=ON` option
+> is set when CMake is executed during compilation.
+
+All of the examples provided for the EII Message Bus use a JSON configuration
+file to configure the EII Message Bus. There are several example configurations
+provided with the message bus for running in IPC and TCP mode accross the
+various different messaging patterns (i.e. Publish/Subscribe and Request/Response).
+All of these example configurations are in the `examples/configs/` directory.
+However, all of them are copied into the `build/examples/configs/` directory
+as well when you build the message bus.
+
+The table below specifies all of the provided example configurations.
+
+|                 Configuration                   |                                     Description                                     |
+| :---------------------------------------------: | ----------------------------------------------------------------------------------- |
+| ipc_example_config.json                         | Configuration for IPC based communication. Works with all examples.                 |
+| ipc_example_config_multi_topics.json                         | Configuration for IPC based communications to be used with multi-topic publishing/subscribing. Works with publisher-many & subscriber examples.                 |
+| tcp_publisher_no_security.json                  | TCP configuration for publishing with no security.                                  |
+| tcp_publisher_with_security_no_auth.json        | TCP configuration for publishing with key based auth without ZAP auth.              |
+| tcp_publisher_with_security_with_auth.json      | TCP configuration for publishing with key based auth and ZAP auth.                  |
+| tcp_subscriber_no_security.json                 | TCP configuration for subscribing to a topic with no security.                      |
+| tcp_subscriber_no_security_prefix_match.json                 | TCP configuration for subscribing to multiple topics which share a common prefix, with no security.                                        |
+| tcp_subscriber_with_security.json               | TCP configuration for subscribing to a topic with security enabled.                 |
+| tcp_subscriber_with_security_prefix_match.json                 | TCP configuration for subscribing to multiple topics which share a common prefix, with security.                                        |
+| tcp_service_server_no_security.json             | TCP configuration for a service server side (i.e. `echo-service`) without security. |
+| tcp_service_server_with_security_no_auth.json   | TCP configuration for a service server side with key based auth without ZAP auth.   |
+| tcp_service_server_with_security_with_auth.json | TCP configuration for a service server side with key based auth and ZAP auth.       |
+| tcp_service_client_no_security.json             | TCP configuration for a service client side (i.e. `echo-client`) with no security.  |
+| tcp_service_client_with_security.json           | TCP configuration for a service client side with security enabled.                  |
+
+You will notice that for the publisher configurations and service server side
+configurations there are 3 configurations each, where as subscribers and service
+client side configurations only have 2. This is because for publishers and service
+server side applications there are two forms of security to enable: with ZAP authentication,
+and no ZAP authentication. In the configurations with ZAP authentication, an
+additional configuration value is provided which specifies the list of clients
+(i.e. subscribers or service client side connections) which are allowed to connect
+to the specified port. This list oporates as a whitelist of allowed client public
+keys. If a connection is attempted with a key not in that list, then the connection
+is denied.
+
+### C Examples
+
+There are currently 5 C examples:
+
+1. `examples/publisher.c`
+2. `examples/subscriber.c`
+3. `examples/echo_server.c`
+4. `examples/echo_client.c`
+5. `examples/publisher_many.c`
+
+All of the C example executables are in the `build/examples/` directory. To run
+them, execute the following command:
+
+```sh
+$ ./publisher ./configs/ipc_example_config.json
+```
+
+> **NOTE:** The `tcp_example_config.json` can also be used in lieu of the IPC
+> configuration file.
+
+All of the examples follow the command structure above, i.e.
+`<command> <json-config-file>.json`, except for the `publisher_many.c`
+example. This example is explained more in-depth in the next section.
+
+#### Publisher Many Example
+
+The `examples/publisher_many.c` example serves as a reference for implementing
+an application which contains many publishers. This also serves as a way of
+testing this functionality in the EII Message Bus.
+
+The example can be run with the following command (from the `build/examples/`
+directory):
+
+```sh
+$ ./publisher-many ./configs/ipc_example_config.json 5
+```
+
+In the case above, the example will create 5 publishers where the topic
+strings follow the pattern `pub-{0,N-1}` where `N` is the number of publishers
+specified through the CLI. Can replace this JSON config file with any other JSON
+config as mention in the table above.
+
+The behavior of how these topics are published depends on if the configuration
+is IPC or TCP (i.e. if `type` is set to `zmq_ipc` vs. `zmq_tcp` in the JSON
+configuration file).
+
+If IPC communication is being used, then each topic will be a different Unix
+socket file in the `socket_dir` directory specified in the configuration, if default IPC config file `ipc_example_config.json` is used. If the IPC config file `ipc_example_config_multi_topics.json` is used then each topic is published over
+the socket file that is mentioned in the configuration file. For example, in the
+default file `ipc_example_config_multi_topics.json`, all topics publish & subscribe over the same socket file "multi-topics". However, we can have each topic or a set of topics publish/subscribe over a different socket file.
+
+If TCP communication is being used, then each message will be published over
+the `host` and `port` specified under the `zmq_tcp_publish` JSON object in the
+configuration.
+
+In order to subscribe to the topics published by this example, use the
+`subscriber.c` example. If you are using TCP or even IPC with multiple topics subscription, then you will need to specify the topic in your configuration. For example, your JSON configuration will
+need to contain the following to subscribe to the `pub-0` topic:
+
+```json
+{
+    "pub-0": {
+        "host": "127.0.0.1",
+        "port": 5569
     }
 ```
+> **NOTE:** The `host` and `port` are assumed above, they may be different.
 
-In the above specified **config.json**, the value of **config** key is the config required by the service to run and the value of the **interfaces** key is the config required by the service to
-interact with other services of EII stack over EII message bus.
+In order to simplify the creation of the configuration for subscribing to
+topics over TCP, the `gen_tcp_sub_conf.py` helper script is provided. This
+Python script will generate a JSON file for you based on your TCP JSON
+configuration for the `publisher-many` example which contains all of the
+topics specified so you can subscribe to any of them.
 
-The **Subscribers** value in the **interfaces** section denotes that this service should act as a subscriber to the stream being published by the value specified by **PublisherAppName** on the
-endpoint mentioned in value specified by **EndPoint** on topics specified in value of **Topics** key.
-
-The **Publishers** value in the **interfaces** section denotes that this service publishes a stream of data after obtaining and processing it from **VideoAnalytics**. The stream is published on
-the endpoint mentioned in value of **EndPoint** key on topics mentioned in the value of **Topics** key. The services mentioned in the value of **AllowedClients** are the only clients able to
-subscribe to the published stream if being published securely over the EIIMessageBus.
-
-Similar to above interface keys, EII services can also have "Servers" and "Clients" interface keys too. For example, check [config.json](VideoIngestion/config.json) of VideoIngestion service and [config.json](tools/SWTriggerUtility/config.json) of SWTriggerUtility tool on how to use.
-
-More details on the `interfaces` key responsible for the EII MessageBus endpoint configuration
-can be found at [common/libs/ConfigMgr/README.md#interfaces](common/libs/ConfigMgr/README.md#interfaces)
-
-# Provision
-
-<b>`By default EII is provisioned in Secure mode`</b>.
-
-Follow below steps to provision. Provisioning must be done before deploying EII on any node. It will start ETCD as a container and load it with configuration required to run EII for single node or multi node cluster set up.
-
-Please follow below steps to provision in Developer mode. Developer mode will have all security disabled.
-
-* Please update DEV_MODE=true in [build/.env](build/.env) to provision in Developer mode.
-* Please re-run the [build/builder.py](build/builder.py) to re-generate the consolidated files as mentioned above
-
-Following actions will be performed as part of Provisioning
-
- * Loading inital ETCD values from json file located at [build/provision/config/eii_config.json](build/provision/config/eii_config.json).
- * For Secure mode, Generating ZMQ secret/public keys for each app and putting them in ETCD.
- * Generating required X509 certs and putting them in etcd.
- * All server certificates will be generated with 127.0.0.1, localhost and HOST_IP mentioned in [build/.env](build/.env).
- * If HOST_IP is blank in [build/.env](build/.env), then HOST_IP will be automatically detected when server certificates are generated.
-
-**Optional:** In case of any errors during provisioning w.r.t existing volumes, please remove the existing volumes by running the EII uninstaller script: [eii_uninstaller.sh](build/eii_uninstaller.sh)
-
-Run all the below commmands in this section from `[WORKDIR]/IEdgeInsights/build/provision` directory.
-
-Below script starts `etcd` as a container and provision. Please pass docker-compose file as argument, against which provisioning will be done.
-```sh
-$ cd [WORKDIR]/IEdgeInsights/build/provision
-$ sudo ./provision.sh <path_to_eii_docker_compose_file>
-
-# eq. $ sudo ./provision.sh ../docker-compose.yml
-
-```
-**Optional:** For capturing the data back from ETCD Cluster to a JSON file, run the [etcd_capture.sh](build/provision/etcd_capture.sh) script. This can be achieved using the following command:
-```sh
-$ ./etcd_capture.sh
-```
-
-# Build and Run EII PCB video/timeseries use cases
-
-  ---
-  > **Note:**
-  > * For running EII services in IPC mode, make sure that the same user should be there in publisher and subscriber.
-     If publisher is running as root (eg: VI, VA), then the subscriber also need to run as root.
-     In [docker-compose.yml](build/docker-compose.yml) if `user: ${EII_UID}` is in publisher service, then the
-     same `user: ${EII_UID}` has to be in subscriber service. If the publisher doesn't have the user specified like above,
-     then the subscriber service should not have that too.
-  ---
-
-All the below EII build and run commands needs to be executed from the `[WORKDIR]/IEdgeInsights/build/` directory.
-
-Below are the usecases supported by EII to bring up the respective services mentioned in the
-yaml file.
-
-## Main usecases
-
-| Usecase                    | yaml file                                                |
-| :---                       | :---                                                    |
-| Video + Timeseries         | [build/video-timeseries.yml](build/video-timeseries.yml) |
-| Video                      | [build/video.yml](build/video.yml)                       |
-| Timeseries                 | [build/time-series.yml](build/time-series.yml)           |
-
-## Video pipeline sub-usecases
-
-| Usecase                                | yaml file                                                               |
-| :---                                   | :---                                                                    |
-| Video streaming                        | [build/video-streaming.yml](build/video-streaming.yml)                  |
-| Video streaming and historical         | [build/video-streaming-storage.yml](build/video-streaming-storage.yml)  |
-| Video streaming with AzureBridge    | [build/video-streaming-azure.yml](build/video-streaming-azure.yml)      |
-| Video streaming and custom udfs        | [build/video-streaming-all-udfs.yml](build/video-streaming-all-udfs.yml)|
-
-To build and run EII in one command:
+This helper script can be ran as follows:
 
 ```sh
-$ xhost +
-$ docker-compose up --build -d
+$ python3.6 ./gen_tcp_sub_conf.py <CONFIG-FILE-PATH>/tcp_publisher_no_security.json output.json 5
 ```
 
-The build and run steps can be split into two as well like below:
+The command above uses the `tcp_publisher_no_security.json` for the `publisher-many`
+configuration. Then it generates all 5 topics and outputs them into the
+`output.json` file.
+
+After generating this configuration, you can use the `subscribe.c` example as
+shown below to subscribe to the `pub-1` topic:
 
 ```sh
-$ docker-compose build
-$ docker-compose up -d
+$ ./subscribe output.json pub-1
 ```
 
-If any of the services fails during build, it can be built using below command
+Similiarly for IPC mode of communicatin with multi topics, the sample JSON configuration would look like below:
+
+``` json
+    {
+    "type": "zmq_ipc",
+    "socket_dir": "${CMAKE_CURRENT_BINARY_DIR}/.socks",
+    "pub-0": {
+        "socket_file": "multi-topics"
+    },
+    "pub-1": {
+       "socket_file": "multi-topics"
+    },
+    "pub-": {
+       "socket_file": "multi-topics"
+    }
+}
+```
+Here, `pub-0` & `pub-1` are the PUB topics & `pub-` is the SUB topics, where we have given just the prefix name. If we don't intend to give the SUB topic prefix, we can as well give the entire SUB topic name. In this example all these topics communicate over a common socket file `multi-topics`.
+
+### Python Examples
+
+> **NOTE:** The Python examples will only be present if the `WITH_EXAMPLES=ON`
+> and `WITH_PYTHON=ON` flags are set when CMake is executed during compilation.
+
+There are currently 4 Python examples:
+
+1. `python/examples/publisher.py`
+2. `python/examples/subscriber.py`
+3. `python/examples/echo_server.py`
+4. `python/examples/echo_client.py`
+
+To run the Python examples, go to the `build/examples/` directory. Then source
+the `source.sh` script that is in the examples directory.
 
 ```sh
-$ docker-compose build --no-cache <service name>
+$ source ./source.sh
 ```
 
-Please note that the first time build of EII containers may take ~70 minutes depending on the n/w speed.
-
-A successful run will open Visualizer UI with results of video analytics for all video usecases.
-
-# Custom Udfs
-
-The following are the two Custom Udfs workflow which EII supports:
-
-1. Build / Run custom udfs as standalone applications
-
-   For running custom udfs as standalone application one must download the video-custom-udfs repo and refer [CustomUdfs/README.md](CustomUdfs/README.md)
-
-2. Build / Run custom udfs in VI or VA
-
-   For running custom udfs either in VI or VA one must refer [VideoIngestion/docs/custom_udfs_doc.md](VideoIngestion/docs/custom_udfs_doc.md)
-
-# Etcd Secrets Configuration
-
-Etcd Secrets configuration are done to establish the data path
-of various EII containers.
-
-Every service in [build/docker-compose.yml](build/docker-compose.yml)
-is a
-* messagebus client if it needs to send or receive data over EIIMessageBus
-* etcd client if it needs to get data from etcd distributed key store
-
-For more details, visit [Etcd_Secrets_Configuration](./Etcd_Secrets_Configuration.md)
-
-# Enable camera based Video Ingestion
-
-For detailed description on configuring different types of cameras and  filter algorithms, refer to the [VideoIngestion/README.md](VideoIngestion/README.md).
-
-# Using video accelerators
-
-EII supports running inference on `CPU`, `GPU`, `MYRIAD`(NCS2), and `HDDL` devices by accepting `device` value ("CPU"|"GPU"|"MYRIAD"|"HDDL"), part of the `udf` object configuration in `udfs`
-key. The `device` field in UDF config of `udfs` key in `VideoIngestion` and `VideoAnalytics` configs can either be changed in the [eii_config.json](build/provision/config/eii_config.json)
-before provisioning (or reprovision it again after the change) or at run-time via EtcdUI. For more details on the udfs config,
-check [common/udfs/README.md](common/udfs/README.md).
-
-* For actual deployment in case USB camera is required then mount the device node of the USB camera for `ia_video_ingestion` service. When multiple USB cameras are connected to host m/c the required camera should be identified with the device node and mounted.
-
-    Eg: Mount the two USB cameras connected to the host m/c with device node as `video0` and `video1`
-    ```
-     ia_video_ingestion:
-        ...
-        devices:
-               - "/dev/dri"
-               - "/dev/video0:/dev/video0"
-               - "/dev/video1:/dev/video1"
-    ```
-
-    Note: /dev/dri is needed for Graphic drivers
-
-* **To run on HDDL devices**
-
-  * Download the full package for OpenVINO toolkit for Linux version "2021.3" (`OPENVINO_IMAGE_VERSION` used in [build/.env](build/.env)) from the official website
-  (https://software.intel.com/en-us/openvino-toolkit/choose-download/free-download-linux).
-
-  Please refer to the OpenVINO links below for to install and running the HDDL daemon on host.
-
-  1. OpenVINO install:
-     https://docs.openvinotoolkit.org/2021.3/_docs_install_guides_installing_openvino_linux.html#install-openvino
-  2. HDDL daemon setup:
-     https://docs.openvinotoolkit.org/2021.3/_docs_install_guides_installing_openvino_linux_ivad_vpu.html
-
-     **NOTE**: OpenVINO 2021.3 installation creates a symbolic link to latest installation with filename as `openvino_2021` instead of `openvino`. Hence one can create a symbolic link with filename as `openvino` to the latest installation using the below steps.
-
-     ```sh
-     $ cd /opt/intel
-     $ sudo ln -s <OpenVINO latest installation> openvino
-
-       Eg: sudo ln -s openvino_2021.3.394 openvino
-
-     In case there are older versions of OpenVINO installed on the host system please un-install them.
-
-     When running on HDDL devices, the HDDL daemon should be running in a different terminal, or in the background like shown below on the host m/c.
-
-     ```sh
-     $ source /opt/intel/openvino/bin/setupvars.sh
-     $ $HDDL_INSTALL_DIR/bin/hddldaemon
-     ```
-
-   * For actual deployment one could choose to mount only the required devices for services using OpenVINO with HDDL (`ia_video_analytics` or `ia_video_ingestion`) in [docker-compose.yml](build/docker-compose.yml).
-
-    Eg: Mount only the Graphics and HDDL ion device for `ia_video_anaytics` service
-    ```
-      ia_video_analytics:
-         ...
-         devices:
-                 - "/dev/dri"
-                 - "/dev/ion:/dev/ion"
-    ```
-    
-*   **Running on Intel(R) Processor Graphics (GPU/iGPU)**
-     
-    **Note**: The below step is required only for 11th gen Intel Processors
-  
-    Upgrade the kernel version to 5.8 and install the required drivers from the below OpenVINO link:
-    https://docs.openvinotoolkit.org/latest/openvino_docs_install_guides_installing_openvino_linux.html#additional-GPU-steps
-      
-**Note**:
-----
-
-* **Troubleshooting issues for MYRIAD(NCS2) devices**
-
-  * Following is an workaround can be excercised if in case user observes `NC_ERROR` during device initialization of NCS2 stick.
-     While running EII if NCS2 devices failed to initialize properly then user can re-plug the device for the init to happen freshly.
-     User can verify the successfull initialization by executing ***dmesg**** & ***lsusb***  as below:
-
-     ```sh
-     lsusb | grep "03e7" (03e7 is the VendorID and 2485 is one of the  productID for MyriadX)
-     ```
-
-     ```sh
-     dmesg > dmesg.txt
-     [ 3818.214919] usb 3-4: new high-speed USB device number 10 using xhci_hcd
-     [ 3818.363542] usb 3-4: New USB device found, idVendor=03e7, idProduct=2485
-     [ 3818.363546] usb 3-4: New USB device strings: Mfr=1, Product=2, SerialNumber=3
-     [ 3818.363548] usb 3-4: Product: Movidius MyriadX
-     [ 3818.363550] usb 3-4: Manufacturer: Movidius Ltd.
-     [ 3818.363552] usb 3-4: SerialNumber: 03e72485
-     [ 3829.153556] usb 3-4: USB disconnect, device number 10
-     [ 3831.134804] usb 3-4: new high-speed USB device number 11 using xhci_hcd
-     [ 3831.283430] usb 3-4: New USB device found, idVendor=03e7, idProduct=2485
-     [ 3831.283433] usb 3-4: New USB device strings: Mfr=1, Product=2, SerialNumber=3
-     [ 3831.283436] usb 3-4: Product: Movidius MyriadX
-     [ 3831.283438] usb 3-4: Manufacturer: Movidius Ltd.
-     [ 3831.283439] usb 3-4: SerialNumber: 03e72485
-     [ 3906.460590] usb 3-4: USB disconnect, device number 11
-
-* **Troubleshooting issues for HDDL devices**
-
-  * Please verify the hddldaemon started on host m/c to verify if it is using the libraries of the correct OpenVINO version used in [build/.env](build/.env). One could enable the `device_snapshot_mode` to `full` in $HDDL_INSTALL_DIR/config/hddl_service.config on host m/c to get the complete snapshot of the hddl device.
-
-  * Please refer OpenVINO 2021.3 release notes in the below link for new features and changes from the previous versions.
-    https://software.intel.com/content/www/us/en/develop/articles/openvino-relnotes.html
-
-  * Refer OpenVINO website in the below link to skim through known issues, limitations and troubleshooting
-    https://docs.openvinotoolkit.org/2021.3/index.html
-
-----
-
-# Time-series Analytics
-
-For time-series data, a sample analytics flow uses Telegraf for ingestion, Influx DB for storage and Kapacitor for classification. This is demonstrated with an MQTT based ingestion of sample temperature sensor data and analytics with a Kapacitor UDF which does threshold detection on the input values.
-
-The services mentioned in [build/time-series.yml](build/time-series) will be available in the consolidated [build/docker-compose.yml](build/docker-compose.yml) and consolidated [build/eii_config.json](build/eii_config.json) of the EII stack for timeseries use case when built via `builder.py` as called out in previous steps.
-
-This will enable building of Telegraf and the Kapacitor based analytics containers.
-More details on enabling this mode can be referred from [Kapacitor/README.md](Kapacitor/README.md)
-
-The sample temperature sensor can be simulated using the [tools/mqtt-temp-sensor](tools/mqtt-temp-sensor) application.
-
-# List of All EII Services
-
-EII stack comes with following services, which can be included/excluded in docker-compose file based on requirements.
-
-## Common EII services
-
-1. [EtcdUI](EtcdUI/README.md)
-2. [InfluxDBConnector](InfluxDBConnector/README.md)
-3. [OpcuaExport](OpcuaExport/README.md) - Optional service to read from VideoAnalytics container to publish data to opcua clients
-4. [RestDataExport](RestDataExport/README.md) - Optional service to read the metadata and image blob from InfluxDBConnector and ImageStore services respectively
-
-## Video related services
-
-1. [VideoIngestion](VideoIngestion/README.md)
-2. [VideoAnalytics](VideoAnalytics/README.md)
-3. [Visualizer](Visualizer/README.md)
-4. [WebVisualizer](WebVisualizer/README.md)
-5. [ImageStore](ImageStore/README.md)
-6. [AzureBridge](AzureBridge/README.md)
-7. [FactoryControlApp](FactoryControlApp/README.md) - Optional service to read from VideoAnalytics container if one wants to control the light based on defective/non-defective data
-
-## Timeseries related services
-
-1. [Telegraf](Telegraf/README.md)
-2. [Kapacitor](Kapacitor/README.md)
-3. [Grafana](Grafana/README.md)
-
-# EII multi node cluster provision and deployment using Turtlecreek
-
-By default EII is provisioned with Single node cluster. In order to deploy EII on multiple nodes using docker registry, provision ETCD cluster and
-remote managibility using turtlecreek, please follow [build/deploy/README.md](build/deploy/README.md)
-
-# Debugging options
-
-1. To check if all the EII images are built successfully, use cmd: `docker images|grep ia` and
-   to check if all containers are running, use cmd: `docker ps` (`one should see all the dependency containers and EII containers up and running`). If you see issues where the build is failing due to non-reachability to Internet, please ensure you have correctly configured proxy settings and restarted docker service. Even after doing this, if you are running into the same issue, please add below instrcutions to all the dockerfiles in `build\dockerfiles` at the top after the LABEL instruction and retry the building EII images:
-
-    ```sh
-    ENV http_proxy http://proxy.iind.intel.com:911
-    ENV https_proxy http://proxy.iind.intel.com:911
-    ```
-
-2. `docker ps` should list all the enabled containers which are included in docker-compose.yml
-
-3. To verify if the default video pipeline with EII is working fine i.e., from video ingestion->video analytics->visualizer, please check the visualizer UI
-
-4. `/opt/intel/eii` root directory gets created - This is the installation path for EII:
-     * `data/` - stores the backup data for persistent imagestore and influxdb
-     * `sockets/` - stores the IPC ZMQ socket files
-
----
-**Note**:
-1. Few useful docker-compose and docker commands:
-     * `docker-compose build` - builds all the service containers. To build a single service container, use `docker-compose build [serv_cont_name]`
-     * `docker-compose down` - stops and removes the service containers
-     * `docker-compose up -d` - brings up the service containers by picking the changes done in `docker-compose.yml`
-     * `docker ps` - check running containers
-     * `docker ps -a` - check running and stopped containers
-     * `docker stop $(docker ps -a -q)` - stops all the containers
-     * `docker rm $(docker ps -a -q)` - removes all the containers. Useful when you run into issue of already container is in use.
-     * [docker compose cli](https://docs.docker.com/compose/reference/overview/)
-     * [docker compose reference](https://docs.docker.com/compose/compose-file/)
-     * [docker cli](https://docs.docker.com/engine/reference/commandline/cli/#configuration-files)
-
-2. If you want to run the docker images separately i.e, one by one, run the command `docker-compose run --no-deps [service_cont_name]` Eg: `docker-compose run --name ia_video_ingestion --no-deps      ia_video_ingestion` to run VI container and the switch `--no-deps` will not bring up it's dependencies mentioned in the docker-compose file. If the container is not launching, there could be
-   some issue with entrypoint program which could be overrided by providing this extra switch `--entrypoint /bin/bash` before the service container name in the docker-compose run command above, this would let one inside the container and run the actual entrypoint program from the container's terminal to rootcause the issue. If the container is running and one wants to get inside, use cmd: `docker-compose exec [service_cont_name] /bin/bash` or `docker exec -it [cont_name] /bin/bash`
-
-3. Best way to check logs of containers is to use command: `docker logs -f [cont_name]`. If one wants to see all the docker-compose service container logs at once, then just run
-   `docker-compose logs -f`
-
----
-
-# Troubleshooting guide
-
-1. Please refer to [TROUBLESHOOT.md](./TROUBLESHOOT.md) guide for any troubleshooting tips related to EII configuration and installation
-2. If any issues are observed w.r.t the python package installation then manually install the python packages as shown below :
+Then, execute one of the following commands:
 
 ```sh
-$ cd [WORKDIR]/IEdgeInsights/build
-# Install requirements for builder.py
-$ pip3 install -r requirements.txt
+$ python3 ./publisher.py <CONFIG-FILE-PATH>/ipc_example_config.json
 ```
 
-# EII Uninstaller
+> **NOTE:** The `tcp_example_config.json` can also be used in lieu of the IPC
+> configuration file.
 
-The uninstaller script automates the removal of all the EII Docker configuration installed on a system. This uninstaller will perform the following tasks:
-1. **Stops and removes all EII running and stopped containers**
-2. **Removes all EII docker volumes**
-3. **Removes all EII docker images \[Optional\]**
-4. **Removes all EII install directory**
+All of the examples follow the same command structure as the `publisher.py`
+script, i.e. `python3 <python-script>.py <json-config-file>.json`.
 
-Run the below commmand from `[WORKDIR]/IEdgeInsights/build/` directory.
+### Go Examples
+
+> **IMPORANT NOTE:** It is assumed that when compiling the C library prior to
+> running the examples that the `WITH_GO=ON` flag was specified when executing
+> the `cmake` command. It is also assume that, `sudo make install` has been
+> ran. If it has not and you do not wish to install the library, see the
+> "Running Go Examples without Installing" section below.
+
+When the `sudo make install` command is executed on your system, the Go binding
+will be copied to your system's `$GOPATH`. To execute the examples provided
+with the EII Message Bus Go binding go to the `$GOPATH/src/EIIMessageBus/examples`
+directory on your system in a terminal window.
+
+Once you are in this directory choose an example (i.e. publisher, subscriber,
+etc.) and `cd` into that directory. Then, to run the example execute the
+following command:
 
 ```sh
-$ ./eii_uninstaller.sh -h
-Usage: ./eii_uninstaller.sh [-h] [-d]
-
- This script uninstalls previous EII version.
- Where:
-    -h show the help
-    -d triggers the deletion of docker images (by default it will not trigger)
-
- Example: 
-  1) Deleting only EII Containers and Volumes
-    $ ./eii_uninstaller.sh
-
-  2) Deleting EII Containers, Volumes and Images
-    $ export EII_VERSION=2.4
-    $ ./eii_uninstaller.sh -d
-    above example will delete EII containers, volumes and all the docker images having 2.4 version.
-
+$ go run main.go -configFile <CONFIG-FILE>.json -topic publish_test
 ```
+
+The example command above will run either the subscriber or publisher examples.
+For the echo-client and echo-server examples the `-topic` flag should be
+`-serviceName`.
+
+Additionally, there are example configurations provided in the
+`build/examples/configs/` directory after building the EII Message Bus library.
+
+### Running Go Examples without Installing
+
+If you wish to run the Go binding examples with out installing the EII Message
+Bus library, then this can be accomplished by either copying or creating a
+soft-link to the `go/EIIMessageBus` directory in your `$GOPATH`. This can be
+accomplished with one of the commands shown below.
+
+```sh
+$ cp -r go/EIIMessageBus/ $GOPATH/src
+
+# OR
+
+$ ln -s go/EIIMessageBus/ $GOPATH/src
+```
+
+> **NOTE:** The command above assumes that you are currently in the
+> EIIMessageBus source root directory.
+
+Since it is assumed you have not ran the `sudo make install` command to install
+the EII Message Bus library, you must set the environmental variables specified
+below prior to running the examples.
+
+```sh
+$ export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$MSGBUS_DIR/build
+$ export PKG_CONFIG_PATH=$PKG_CONFIG_PATH:$MSGBUS_DIR/build
+```
+
+Note that in the `export` commands above the `$MSGBUS_DIR` variable represents
+the absolute path to the `libs/EIIMessageBus` directory. It is very important
+that this is the absolute path.
+
+Once you have exported these variables, once you have done these steps, you can
+run any of the Go examples as specified in the previous section.
+
+## Security
+
+> **IMPORTANT NOTE:** Security is only available for TCP communications. If IPC
+> is being used, then all access must be controlled using Linux file
+> permissions.
+
+> **NOTE:** Example configurations using for enabling security in the examples
+> are provided in the `examples` directory.
+
+The ZeroMQ protocol for the EII Message Bus enables to usage of
+[CurveZMQ](http://curvezmq.org/) for encryption and authentication where the
+[ZAP](https://rfc.zeromq.org/spec:27/ZAP/) protocol is used for the
+authentication.
+
+The ZeroMQ protocol for the message bus allows for using both CurveZMQ and ZAP
+together, only CurveZMQ encryption, or no encryption/authentication for TCP
+communication.
+
+Enabling the security features is done through the configuration object which
+is given to the `msgbus_initialize()` method. The example configurations below
+showcase how to use the security features enabled in the message bus. It is
+important to note that although the examples below use JSON to convey the
+configurations it is not required that you use a JSON configuration for the
+message bus. However, utilities are provided in the C library for the EII
+message bus for using a JSON file to configure the bus.
+
+### Using Only CurveZMQ Encryption
+
+If you wish to use the message bus with only CurveZMQ encryption, then you
+specify the following keys for the communication types specified in the
+sections below.
+
+**IMPORTANT NOTE:** All keys must be Z85 encoded (see ZeroMQ documentation for
+more information).
+
+#### Publish/Subscribe
+
+For publications over TCP, the configuration must contain a `server_secret_key`
+value which the secret key of the Curve key pair that is Z85 encoded (see
+the ZeroMQ documentation for more information).
+
+Additionally, every subscriber configuration object (which is specified under
+the key for the topic it is subscribing to) must contain the following three
+keys: `server_public_key`, `client_public_key`, and `client_secret_key`.
+
+**Example:**
+
+Below is an example configuration in JSON (note: the keys are not Z85 encoded,
+but are more clear text to help the example).
+
+**Publisher Config:**
+
+```json
+{
+    "type": "zmq_tcp",
+    "zmq_tcp_publish": {
+        "host": "127.0.0.1",
+        "port": 3000,
+        "server_secret_key": "publishers-secret-key"
+    }
+}
+```
+
+**Subscriber Config:**
+
+```json
+{
+    "type": "zmq_tcp",
+    "pub-sub-topic": {
+        "host": "127.0.0.1",
+        "port": 3000,
+        "server_public_key": "publishers-public-key",
+        "client_secret_key": "subscriber-secret-key",
+        "client_public_key": "subscriber-public-key"
+    }
+}
+```
+
+In the example configurations above, it is assumed that the publisher is
+sending messages on the `pub-sub-topic` topic.
+
+#### Request/Response
+
+For every service which is going to accept and respond to requests, there must
+exist the `server_secret_key` in the configuration object for the service. The
+key for the configuration of the service is its service name.
+
+For every service which is going to issue requests to another service, there
+must exist a configuration object for the destination service name which
+contains the following three keys: `server_public_key`, `client_public_key`,
+and `client_secret_key`.
+
+**Example:**
+
+**Service Config:**
+
+```json
+{
+    "type": "zmq_tcp",
+    "example-service": {
+        "host": "127.0.0.1",
+        "port": 3000,
+        "server_secret_key": "service-secret-key"
+    }
+}
+```
+
+**Service Requester Config:**
+
+```json
+{
+    "type": "zmq_tcp",
+    "example-service": {
+        "host": "127.0.0.1",
+        "port": 3000,
+        "server_public_key": "service-public-key",
+        "client_secret_key": "service-requester-secret_key",
+        "client_public_key": "service-requester-public-key"
+    }
+}
+```
+
+In the example above, the service requester will connect to the `example-service`
+and issue requests to it on the port: `127.0.0.1:3000`.
+
+### Using ZAP Authentication
+
+To enable ZAP authentication protocol using CurveZMQ on top of the encryption,
+then in the configuration specify the key `allowed_clients`. This key must have
+a value which is a list of Z85 encoded strings which are the public keys of the
+clients which are allowed to connect to the application.
+
+For example, using the publish/subscribe example from before, to make it so
+that only the subscriber client can connect to the publisher the publisher's
+configuration would be modified to be the following:
+
+```json
+{
+    "type": "zmq_tcp",
+    "allowed_clients": ["subscriber-public-key"],
+    "zmq_tcp_publish": {
+        "host": "127.0.0.1",
+        "port": 3000,
+        "server_secret_key": "publishers-secret-key"
+    }
+}
+```
+
+### Disabling Security
+
+To disable all encryption and authentication for TCP communication do not
+specify any of the configuration keys documented above. This will cause the
+message bus to initialize the ZeroMQ protocol without any of the CurveZMQ
+security primitives.
+
+### Generating EIIMessageBus DEB package
+
+To generate EIIMessageBus DEB package, please ensure you have IEdgeInsights
+setup on your system as a pre-requisite and that you have run the
+eii_libs_installer.sh script present in [IEdgeInsights/common] referring its
+README atleast once. This is required to install the pre-requisites of
+EIIMessageBus namely EIIMsgEnv & EIIUtils.
+
+Once the pre-requisites are enabled, please run these commands to generate the
+DEB package in build directory.
+
+```sh
+$ mkdir build
+$ cd build
+$ cmake ..
+$ cpack
+```
+
+> **NOTE:** Since creating the DEB package requires only eiimsgenv & eiimsgbus,
+> if the eii_libs_installer.sh breaks while installing eiimsgbus, it is recommended
+> to generate the DEB package here and replace the existing one in [IEdgeInsights]
+> repo.
